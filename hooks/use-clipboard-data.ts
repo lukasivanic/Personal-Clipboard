@@ -7,15 +7,38 @@ import { useToast } from "@/hooks/use-toast"
 // Helper to safely check if we're in a browser environment
 const isBrowser = () => typeof window !== "undefined"
 
+// LocalStorage fallback functions
+const STORAGE_KEY = "clipboard-items"
+
+const saveToLocalStorage = (items: ClipboardItem[]) => {
+  if (isBrowser()) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
+  }
+}
+
+const loadFromLocalStorage = (): ClipboardItem[] => {
+  if (!isBrowser()) return []
+
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    return stored ? JSON.parse(stored) : []
+  } catch {
+    return []
+  }
+}
+
+const generateId = () => Math.random().toString(36).substr(2, 9)
+
 export function useClipboardData() {
   const [items, setItems] = useState<ClipboardItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionIdState] = useState<string>("")
-  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "error">("connecting")
+  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "offline">("connecting")
+  const [useOfflineMode, setUseOfflineMode] = useState(false)
   const { toast } = useToast()
 
-  // Generate a simple user ID for demo purposes (in production, use proper auth)
+  // Generate a simple user ID for demo purposes
   const getSessionId = () => {
     if (!isBrowser()) return ""
 
@@ -28,20 +51,30 @@ export function useClipboardData() {
   }
 
   const testDatabaseConnection = async () => {
+    if (!supabase) {
+      setConnectionStatus("offline")
+      setUseOfflineMode(true)
+      setError("Database not configured - using offline mode")
+      return false
+    }
+
     try {
       const result = await testConnection()
       if (result.success) {
         setConnectionStatus("connected")
+        setUseOfflineMode(false)
         setError(null)
         return true
       } else {
-        setConnectionStatus("error")
-        setError(`Database connection failed: ${result.message}`)
+        setConnectionStatus("offline")
+        setUseOfflineMode(true)
+        setError(`Database unavailable - using offline mode: ${result.message}`)
         return false
       }
-    } catch (err) {
-      setConnectionStatus("error")
-      setError(`Connection test failed: ${err.message}`)
+    } catch (err: any) {
+      setConnectionStatus("offline")
+      setUseOfflineMode(true)
+      setError(`Connection failed - using offline mode: ${err.message}`)
       return false
     }
   }
@@ -51,46 +84,65 @@ export function useClipboardData() {
       setLoading(true)
       setError(null)
 
-      // Test connection first
-      const isConnected = await testDatabaseConnection()
-      if (!isConnected) {
-        setLoading(false)
-        return
-      }
-
       const currentSessionId = getSessionId()
-
       if (!currentSessionId) {
         setItems([])
         setLoading(false)
         return
       }
 
-      console.log("Fetching items for session:", currentSessionId)
+      // Test connection first
+      const isConnected = await testDatabaseConnection()
 
-      const { data, error } = await supabase
-        .from("clipboard_items")
-        .select("*")
-        .eq("user_id", currentSessionId)
-        .order("timestamp", { ascending: false })
+      if (isConnected && supabase) {
+        // Use database
+        console.log("Fetching from database for session:", currentSessionId)
 
-      if (error) {
-        console.error("Supabase error:", error)
-        throw new Error(`Database query failed: ${error.message}`)
+        const { data, error } = await supabase
+          .from("clipboard_items")
+          .select("*")
+          .eq("user_id", currentSessionId)
+          .order("timestamp", { ascending: false })
+
+        if (error) {
+          console.error("Database error:", error)
+          throw new Error(`Database query failed: ${error.message}`)
+        }
+
+        console.log("Fetched from database:", data)
+        setItems(data || [])
+      } else {
+        // Use localStorage fallback
+        console.log("Using localStorage fallback")
+        const localItems = loadFromLocalStorage()
+        const sessionItems = localItems.filter((item) => item.user_id === currentSessionId)
+        setItems(sessionItems)
+
+        if (!isConnected) {
+          toast({
+            title: "Offline Mode",
+            description: "Using local storage. Data won't sync across devices.",
+            variant: "default",
+          })
+        }
       }
-
-      console.log("Fetched items:", data)
-      setItems(data || [])
-      setConnectionStatus("connected")
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error fetching items:", err)
-      setConnectionStatus("error")
-      setError(err.message || "Failed to load clipboard items")
+      setConnectionStatus("offline")
+      setUseOfflineMode(true)
+
+      // Fallback to localStorage
+      const localItems = loadFromLocalStorage()
+      const currentSessionId = getSessionId()
+      const sessionItems = localItems.filter((item) => item.user_id === currentSessionId)
+      setItems(sessionItems)
+
+      setError(`Using offline mode: ${err.message}`)
 
       if (isBrowser()) {
         toast({
           title: "Connection Error",
-          description: err.message || "Failed to load clipboard items. Check your internet connection.",
+          description: "Using offline mode. Data won't sync across devices.",
           variant: "destructive",
         })
       }
@@ -102,70 +154,113 @@ export function useClipboardData() {
   const addItem = async (content: string, title?: string) => {
     try {
       const currentSessionId = getSessionId()
-
       if (!currentSessionId) {
         throw new Error("No session ID available")
       }
 
-      if (connectionStatus !== "connected") {
-        throw new Error("Not connected to database")
+      const newItem: ClipboardItem = {
+        id: generateId(),
+        content: content.trim(),
+        title: title?.trim() || undefined,
+        timestamp: new Date().toISOString(),
+        is_favorite: false,
+        user_id: currentSessionId,
       }
 
-      console.log("Adding item for session:", currentSessionId)
+      if (useOfflineMode || !supabase) {
+        // Use localStorage
+        const allItems = loadFromLocalStorage()
+        const updatedItems = [newItem, ...allItems]
+        saveToLocalStorage(updatedItems)
+        setItems((prev) => [newItem, ...prev])
 
-      const { data, error } = await supabase
-        .from("clipboard_items")
-        .insert([
-          {
-            content: content.trim(),
-            title: title?.trim() || null,
-            user_id: currentSessionId,
-            is_favorite: false,
-          },
-        ])
-        .select()
-        .single()
+        toast({
+          title: "Added to clipboard (Offline)",
+          description: "Item saved locally",
+        })
+      } else {
+        // Use database
+        console.log("Adding to database for session:", currentSessionId)
 
-      if (error) {
-        console.error("Insert error:", error)
-        throw new Error(`Failed to add item: ${error.message}`)
+        const { data, error } = await supabase
+          .from("clipboard_items")
+          .insert([
+            {
+              content: newItem.content,
+              title: newItem.title || null,
+              user_id: currentSessionId,
+              is_favorite: false,
+            },
+          ])
+          .select()
+          .single()
+
+        if (error) {
+          console.error("Insert error:", error)
+          throw new Error(`Failed to add item: ${error.message}`)
+        }
+
+        console.log("Added to database:", data)
+        setItems((prev) => [data, ...prev])
+
+        toast({
+          title: "Added to clipboard",
+          description: "Item saved and synced",
+        })
       }
 
-      console.log("Added item:", data)
-      setItems((prev) => [data, ...prev])
-
-      toast({
-        title: "Added to clipboard",
-        description: "Item saved successfully",
-      })
-
-      return data
-    } catch (err) {
+      return newItem
+    } catch (err: any) {
       console.error("Error adding item:", err)
+
+      // Fallback to localStorage on error
+      const currentSessionId = getSessionId()
+      const newItem: ClipboardItem = {
+        id: generateId(),
+        content: content.trim(),
+        title: title?.trim() || undefined,
+        timestamp: new Date().toISOString(),
+        is_favorite: false,
+        user_id: currentSessionId,
+      }
+
+      const allItems = loadFromLocalStorage()
+      const updatedItems = [newItem, ...allItems]
+      saveToLocalStorage(updatedItems)
+      setItems((prev) => [newItem, ...prev])
+
       toast({
-        title: "Error",
-        description: err.message || "Failed to add item",
-        variant: "destructive",
+        title: "Added to clipboard (Offline)",
+        description: "Item saved locally due to connection error",
+        variant: "default",
       })
-      throw err
+
+      return newItem
     }
   }
 
   const toggleFavorite = async (id: string, currentFavorite: boolean) => {
     try {
-      if (connectionStatus !== "connected") {
-        throw new Error("Not connected to database")
+      if (useOfflineMode || !supabase) {
+        // Use localStorage
+        const allItems = loadFromLocalStorage()
+        const updatedItems = allItems.map((item) =>
+          item.id === id ? { ...item, is_favorite: !currentFavorite } : item,
+        )
+        saveToLocalStorage(updatedItems)
+        setItems((prev) => prev.map((item) => (item.id === id ? { ...item, is_favorite: !currentFavorite } : item)))
+      } else {
+        // Use database
+        const { error } = await supabase.from("clipboard_items").update({ is_favorite: !currentFavorite }).eq("id", id)
+
+        if (error) {
+          console.error("Update error:", error)
+          throw new Error(`Failed to update favorite: ${error.message}`)
+        }
+
+        setItems((prev) => prev.map((item) => (item.id === id ? { ...item, is_favorite: !currentFavorite } : item)))
       }
-
-      const { error } = await supabase.from("clipboard_items").update({ is_favorite: !currentFavorite }).eq("id", id)
-
-      if (error) {
-        console.error("Update error:", error)
-        throw new Error(`Failed to update favorite: ${error.message}`)
-      }
-
-      setItems((prev) => prev.map((item) => (item.id === id ? { ...item, is_favorite: !currentFavorite } : item)))
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error toggling favorite:", err)
       toast({
         title: "Error",
@@ -177,24 +272,29 @@ export function useClipboardData() {
 
   const deleteItem = async (id: string) => {
     try {
-      if (connectionStatus !== "connected") {
-        throw new Error("Not connected to database")
+      if (useOfflineMode || !supabase) {
+        // Use localStorage
+        const allItems = loadFromLocalStorage()
+        const updatedItems = allItems.filter((item) => item.id !== id)
+        saveToLocalStorage(updatedItems)
+        setItems((prev) => prev.filter((item) => item.id !== id))
+      } else {
+        // Use database
+        const { error } = await supabase.from("clipboard_items").delete().eq("id", id)
+
+        if (error) {
+          console.error("Delete error:", error)
+          throw new Error(`Failed to delete item: ${error.message}`)
+        }
+
+        setItems((prev) => prev.filter((item) => item.id !== id))
       }
-
-      const { error } = await supabase.from("clipboard_items").delete().eq("id", id)
-
-      if (error) {
-        console.error("Delete error:", error)
-        throw new Error(`Failed to delete item: ${error.message}`)
-      }
-
-      setItems((prev) => prev.filter((item) => item.id !== id))
 
       toast({
         title: "Deleted",
         description: "Item removed from clipboard",
       })
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error deleting item:", err)
       toast({
         title: "Error",
@@ -221,7 +321,7 @@ export function useClipboardData() {
 
   // Set up real-time subscription only after successful connection
   useEffect(() => {
-    if (isBrowser() && sessionId && connectionStatus === "connected") {
+    if (isBrowser() && sessionId && connectionStatus === "connected" && supabase) {
       console.log("Setting up real-time subscription for session:", sessionId)
 
       const channel = supabase
@@ -239,7 +339,6 @@ export function useClipboardData() {
 
             if (payload.eventType === "INSERT") {
               setItems((prev) => {
-                // Avoid duplicates
                 if (prev.some((item) => item.id === payload.new.id)) {
                   return prev
                 }
@@ -276,6 +375,7 @@ export function useClipboardData() {
     loading,
     error,
     connectionStatus,
+    useOfflineMode,
     addItem,
     toggleFavorite,
     deleteItem,

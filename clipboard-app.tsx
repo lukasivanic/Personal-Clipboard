@@ -19,6 +19,7 @@ export default function ClipboardApp() {
     loading,
     error,
     connectionStatus,
+    useOfflineMode,
     addItem,
     toggleFavorite,
     deleteItem,
@@ -165,11 +166,11 @@ export default function ClipboardApp() {
                 <div className="flex items-center gap-1 text-sm text-muted-foreground">
                   {connectionStatus === "connected" && <Wifi className="w-4 h-4 text-green-500" />}
                   {connectionStatus === "connecting" && <RefreshCw className="w-4 h-4 text-yellow-500 animate-spin" />}
-                  {connectionStatus === "error" && <WifiOff className="w-4 h-4 text-red-500" />}
+                  {connectionStatus === "offline" && <WifiOff className="w-4 h-4 text-orange-500" />}
                   <span>
                     Session: {sessionId}
                     {connectionStatus === "connecting" && " (Connecting...)"}
-                    {connectionStatus === "error" && " (Offline)"}
+                    {connectionStatus === "offline" && " (Offline Mode)"}
                   </span>
                 </div>
               )}

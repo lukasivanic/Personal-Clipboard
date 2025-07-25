@@ -14,8 +14,18 @@ import { useClipboardData } from "@/hooks/use-clipboard-data"
 import { SessionManager } from "@/components/session-manager"
 
 export default function ClipboardApp() {
-  const { items, loading, error, addItem, toggleFavorite, deleteItem, refetch, sessionId, setSessionId } =
-    useClipboardData()
+  const {
+    items,
+    loading,
+    error,
+    connectionStatus,
+    addItem,
+    toggleFavorite,
+    deleteItem,
+    refetch,
+    sessionId,
+    setSessionId,
+  } = useClipboardData()
   const [newContent, setNewContent] = useState("")
   const [newTitle, setNewTitle] = useState("")
   const [searchQuery, setSearchQuery] = useState("")
@@ -153,8 +163,14 @@ export default function ClipboardApp() {
             <div className="flex items-center gap-2">
               {sessionId && (
                 <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                  <Wifi className="w-4 h-4 text-green-500" />
-                  <span>Session: {sessionId}</span>
+                  {connectionStatus === "connected" && <Wifi className="w-4 h-4 text-green-500" />}
+                  {connectionStatus === "connecting" && <RefreshCw className="w-4 h-4 text-yellow-500 animate-spin" />}
+                  {connectionStatus === "error" && <WifiOff className="w-4 h-4 text-red-500" />}
+                  <span>
+                    Session: {sessionId}
+                    {connectionStatus === "connecting" && " (Connecting...)"}
+                    {connectionStatus === "error" && " (Offline)"}
+                  </span>
                 </div>
               )}
               <SessionManager currentSessionId={sessionId} onSessionChange={setSessionId} />

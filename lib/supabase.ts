@@ -7,26 +7,31 @@ const isBrowser = () => typeof window !== "undefined"
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ""
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
 
-// Log environment variable status (only in browser to avoid server-side logging)
-if (isBrowser()) {
-  console.log("Supabase Environment Check:")
-  console.log("URL:", supabaseUrl ? "✓ Present" : "✗ Missing")
-  console.log("Key:", supabaseAnonKey ? "✓ Present" : "✗ Missing")
+// Check if Supabase is properly configured
+export const isSupabaseConfigured = () => {
+  return !!(supabaseUrl && supabaseAnonKey && supabaseUrl.startsWith("https://"))
 }
 
-export const supabase =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: false,
+// Log environment variable status (only in browser to avoid server-side logging)
+if (isBrowser()) {
+  console.log("Supabase Configuration Check:")
+  console.log("URL:", supabaseUrl ? `✓ ${supabaseUrl.substring(0, 20)}...` : "✗ Missing")
+  console.log("Key:", supabaseAnonKey ? "✓ Present" : "✗ Missing")
+  console.log("Configured:", isSupabaseConfigured() ? "✓ Yes" : "✗ No - Using offline mode")
+}
+
+export const supabase = isSupabaseConfigured()
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: false,
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
         },
-        realtime: {
-          params: {
-            eventsPerSecond: 10,
-          },
-        },
-      })
-    : null
+      },
+    })
+  : null
 
 export type ClipboardItem = {
   id: string
@@ -37,18 +42,30 @@ export type ClipboardItem = {
   user_id?: string
 }
 
-// Test connection function
+// Test connection function - only runs if Supabase is configured
 export const testConnection = async () => {
-  if (!supabase) {
+  if (!isSupabaseConfigured() || !supabase) {
     return {
       success: false,
-      message: "Supabase not configured - missing environment variables",
+      message: "Supabase not configured - missing or invalid environment variables",
     }
   }
 
   try {
-    const { data, error } = await supabase.from("clipboard_items").select("count").limit(1)
-    if (error) throw error
+    // Use a simple query that doesn't require the table to exist
+    const { error } = await supabase.from("clipboard_items").select("id").limit(1)
+
+    if (error) {
+      // If table doesn't exist, that's still a "successful" connection
+      if (error.message.includes('relation "clipboard_items" does not exist')) {
+        return {
+          success: false,
+          message: "Database table not created yet - run the setup script",
+        }
+      }
+      throw error
+    }
+
     return { success: true, message: "Connection successful" }
   } catch (error: any) {
     return {
